@@ -3,7 +3,7 @@
 > **Handoff / State Tracker** (Update this as you progress)  
 > 
 
-> - **Student:** Divyam Raj (Senior SRE)  
+> - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
 > - **Current Submodule:** Day 1 — NVIDIA GPU Architecture Overview  
 > - **Active Task:** Day 1 concepts (SMs, CUDA cores vs Tensor cores, registers, SRAM vs HBM, SIMT, warps, warp divergence, thread index mapping, CPU vs GPU workloads)  
