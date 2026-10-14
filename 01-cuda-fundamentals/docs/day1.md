@@ -26,11 +26,38 @@ Data HBM se lana mehnga hai. Isliye baad mein hum yeh dekhenge ki GPU kab comput
 
 ## Software kaise is hardware pe baithta hai
 
-Tumhara kaam teen level mein toota hota hai:
+Socho 8 numbers add karne hain: `1 2 3 4 5 6 7 8`. Har number pe ek insaan kaam karega.
 
-1. **Thread** — ek chhota worker. Ek data element pe kaam karta hai.
-2. **Block** — threads ka group. Ek block ek SM pe jaata hai. Us block ke threads SRAM share kar sakte hain. Do alag blocks SRAM share nahi kar sakte, kyunki woh alag floors pe ho sakte hain.
-3. **Grid** — saare blocks milake. Poora kaam, jaise 10 million numbers add karna.
+**Thread = ek insaan, ek number.**
+
+Thread 0 sirf `1` dekhta hai. Thread 1 sirf `2` dekhta hai. Kisi ko poori list nahi dekhni. Bas apna ek number.
+
+**Block = ek team.**
+
+8 logon ko ek hi team mat banao. Do teams banao, har team mein 4 log:
+
+- Block 0: jo `1 2 3 4` karte hain
+- Block 1: jo `5 6 7 8` karte hain
+
+Ek team ek SM (factory floor) pe jaati hai. Us team ke log ek hi table share kar sakte hain. Doosri team doosre floor pe jaa sakti hai, aur dono teams ek saath kaam kar sakti hain. Doosri team ki table pe yeh team nahi pahunch sakti.
+
+**Grid = saari teams milake, yaani poora kaam.**
+
+Yahan grid = Block 0 + Block 1. Numbers 8 ki jagah 8 million ho jayein, to teams zyada ho jayengi. Idea wahi rehta hai: ek insaan ek number, ek team ek floor, saari teams milake poora job.
+
+## Software level aur hardware level
+
+Thread, block, aur grid **software** hain. Tum decide karte ho. SM, CUDA core, aur warp **hardware** hain. Chip pe pehle se bane hain. Tum unki ginti nahi badal sakte.
+
+12 numbers, har team mein 4 log: tumne **3 blocks** banaye. Yeh software ka faisla hai. GPU pe shayad 100 floors (SMs) hon. Tumne 100 floors nahi banaye. Tumne 3 teams banayi, aur GPU un teams ko khali floors pe bitha deta hai.
+
+| Software (tum likhte ho) | Hardware (chip pe pehle se hai) | Kaise milte hain |
+|---|---|---|
+| **Thread** — ek number pe ek kaam | **CUDA core** — asal worker jo math karta hai | Ek SM ke CUDA cores us block ke threads chalate hain. Threads zyada hote hain, cores kam. Cores baari baari se threads ka kaam karte hain |
+| **Block** — ek team | **SM** — ek floor | GPU ek block ko kisi ek SM pe de deta hai. Block SM nahi hai. Block us floor pe mehmaan hai |
+| **Grid** — saari teams | **Poora GPU** — saare SMs | Grid ke blocks alag-alag SMs pe bikhar jaate hain, isliye kaam ek saath hota hai |
+
+Ek aur hardware cheez jo tum nahi banate: **warp**. Block ke threads ko hardware khud 32 ke pack mein baant deta hai. Tum block ka size chunte ho. Warp ka size hamesha 32 hota hai. 4 threads wali team mein bhi hardware ek warp banata hai, baaki 28 seats khali reh jaati hain. Isliye real kaam mein team size 32 ka multiple rakhte hain, jaise 128 ya 256.
 
 ## Thread ko apna element kaise milta hai
 
