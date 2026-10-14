@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Day 3 — Training OOM  
-> - **Active Task:** Day 3 concepts (weights, gradients, Adam optimizer states, activations, why a 7B model OOMs an 80 GB GPU)  
+> - **Current Submodule:** Day 4 — CUDA Execution Model and Coalesced Access  
+> - **Active Task:** Day 4 concepts (kernel launch, blocks on SMs, warps, coalesced vs strided HBM reads)  
 > - **Status:** In Progress
 
 ---
