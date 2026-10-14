@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Day 1 — NVIDIA GPU Architecture Overview  
-> - **Active Task:** Day 1 concepts (SMs, CUDA cores vs Tensor cores, registers, SRAM vs HBM, SIMT, warps, warp divergence, thread index mapping, CPU vs GPU workloads)  
+> - **Current Submodule:** Day 2 — GPU Memory Hierarchy and Bandwidth  
+> - **Active Task:** Day 2 concepts (DRAM vs HBM vs SRAM vs registers, latency vs bandwidth, memory-bound vs compute-bound)  
 > - **Status:** In Progress
 
 ---
