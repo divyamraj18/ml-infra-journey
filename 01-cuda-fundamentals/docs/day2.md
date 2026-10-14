@@ -2,7 +2,7 @@
 
 Day 1 mein yeh samajh aa gaya ki kaam threads, blocks, aur grid mein toota hai, aur GPU use SM pe chalaata hai. Aaj ka sawaal: data us waqt kahan pada hai, aur GPU ko us data tak pahunchne mein kitna time lagta hai.
 
-GPU aksar isliye slow hota hai kyunki math slow hai. Woh isliye slow hota hai kyunki cores data ka intezaar kar rahe hote hain.
+GPU aksar isliye slow nai hota hai kyunki math slow hai. Woh isliye slow hota hai kyunki cores data ka intezaar kar rahe hote hain.
 
 ## Teen jagah data reh sakta hai
 
@@ -38,7 +38,7 @@ Ek byte HBM se lana mehnga hai. Us byte pe kitni math hoti hai, usse decide hota
 
 **Kam math, zyada aana-jaana.** Do arrays ko element-wise add karna: har output ke liye do numbers padho, ek likho, aur sirf ek add karo. HBM se data laane ka time add karne ke time se bahut zyada hai. CUDA cores baithe rehte hain. Is ko **memory-bound** kehte hain.
 
-**Zyada math, kam aana-jaana.** Badi matrix multiply: ek number SRAM pe aa ke kai rows aur columns mein doobara use hota hai. Ek baar HBM se lana, phir usi number pe bahut saari multiplies. Cores vyast rehte hain. Is ko **compute-bound** kehte hain.
+**Zyada math, kam aana-jaana.** Badi matrix multiply: poori matrix ek saath threads mein nahi aati. HBM se ek chhota tile SRAM pe aata hai, aur us tile ka har number kai rows aur columns mein doobara use hota hai. Ek baar lana, phir usi number pe bahut saari multiplies. Cores vyast rehte hain. Is ko **compute-bound** kehte hain.
 
 Activation functions, element-wise ops, aur chhoti layers aksar memory-bound hoti hain. Badi dense matmul aur badi convolution compute-bound ho sakti hain, agar data SRAM mein reuse ho.
 
@@ -46,7 +46,7 @@ Activation functions, element-wise ops, aur chhoti layers aksar memory-bound hot
 
 Training ya inference mein weights HBM mein rehte hain. Har token pe model un weights ko padhta hai.
 
-Decode (ek ek token nikalna) mein har weight pe bahut kam math hoti hai, kyunki ek time pe ek hi token ka vector un weights se milta hai. GPU ka time HBM se weights padhne mein nikal jaata hai. Isliye bade inference engines pehli taar memory bandwidth ko optimize karte hain, sirf "aur FLOPs" karne ko nahi.
+Decode (ek ek token nikalna) mein har weight pe bahut kam math hoti hai, kyunki ek time pe ek hi token ka vector un weights se milta hai. GPU ka time HBM se weights padhne mein nikal jaata hai. Isliye bade inference engines sabse pehle memory bandwidth optimize karte hain, sirf "aur FLOPs" karne ko nahi.
 
 Prefill (poora prompt ek saath) mein ek hi weight kai tokens pe use hota hai, to math zyada hoti hai aur yeh zyada compute-bound hota hai. Yeh farq Day 5 ke aas-paas aur inference week mein wapas aayega. Abhi itna kaafi hai: **jitni baar ek byte reuse ho, utna GPU HBM ke intezaar se baahar nikalta hai.**
 

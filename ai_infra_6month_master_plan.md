@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Day 2 — GPU Memory Hierarchy and Bandwidth  
-> - **Active Task:** Day 2 concepts (DRAM vs HBM vs SRAM vs registers, latency vs bandwidth, memory-bound vs compute-bound)  
+> - **Current Submodule:** Day 3 — Training OOM  
+> - **Active Task:** Day 3 concepts (weights, gradients, Adam optimizer states, activations, why a 7B model OOMs an 80 GB GPU)  
 > - **Status:** In Progress
 
 ---
