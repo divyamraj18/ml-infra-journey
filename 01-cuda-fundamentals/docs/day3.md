@@ -1,68 +1,141 @@
 # Day 3: Training OOM — HBM kaun bhar deta hai
 
-Day 2 mein HBM GPU ka bada godam thi. Bada, lekin limited. H100 pe lagbhag 80 GB. Training mein yeh 80 GB teen-chaar buckets milkar bhar dete hain. OOM ka matlab yeh nahi ki GPU kharab hai. Matlab in buckets ka sum HBM se bada ho gaya.
+Day 2 mein HBM GPU ka bada godam thi. Bada, lekin limited. H100 pe lagbhag 80 GB. Training ke dauraan kai lists ek saath isi godam mein rehti hain. OOM ka matlab GPU kharab hona nahi hai. Matlab in lists ka sum 80 GB se bada ho gaya.
 
-## 1. Model weights
+Yeh lists disk pe save ki hui files nahi hain. Yeh training ke ek step ke beech GPU ki memory mein zinda rehti hain.
 
-Yeh model khud hai. Har parameter ek number hai.
+## Pehle ek chhota model, taaki buckets dikhein
 
-BF16 ya FP16 mein ek number 2 bytes ka hota hai.
+Socho model sirf itna hai: ghar ki keemat = kamron ki sankhya × ek weight.
 
-7 billion parameters × 2 bytes = 14 GB. Sirf weights. Calculation shuru hone se pehle yeh HBM mein baith chuke hote hain.
+- Kamre = 3
+- Weight = 2
+- Model ki prediction = 3 × 2 = 6 lakh
+- Asli keemat = 10 lakh
+- Galati = 4 lakh kam
 
-## 2. Gradients
+Is chhote model mein weight ek hi number hai. 7B model mein aise numbers 7 billion hain. Idea wahi rehta hai.
 
-Training mein har weight ka ek gradient chahiye, taaki pata chale weight ko kis direction mein hilana hai. Gradients ka size weights jaisa hota hai.
+## Weights kya hain
 
-7B model, BF16 gradients = aur 14 GB.
+Weight woh number hai jo model ne seekha hai. Upar wale example mein weight `2` hai, matlab "ek kamre ki keemat 2 lakh."
 
-## 3. Optimizer states
+7B model mein yeh ek lambi list hai, 7 billion numbers. BF16 mein ek number 2 bytes ka hota hai.
 
-LLM training mein Adam use hota hai. Adam har weight ke liye do extra arrays rakhta hai:
+7 billion × 2 bytes = 14 GB. Sirf weights. Training ka step shuru hone se pehle yeh list HBM mein baith chuki hoti hai, aur agle step mein bhi wahi rehti hai. Seekh kar weight badalta hai, list delete nahi hoti.
 
-- **m** — ab tak ke gradients ka average
-- **v** — ab tak ke squared gradients ka average
+## Gradient kyun rakhte hain
 
-Yeh dono FP32 mein rehte hain, 4 bytes per number. Mixed precision mein weights ki ek FP32 copy bhi rakhi jaati hai, kyunki chhote updates FP16 mein vanish ho jaate hain.
+Prediction 6 lakh hai, asli keemat 10 lakh. Weight ko badhana hai ya ghatana?
 
-Adam mixed precision ka common hisaab, **har parameter pe lagbhag 16 bytes**:
+**Gradient woh number hai jo ek weight ko kehta hai: upar jao ya neeche, aur kitna.**
 
-| Cheez | Bytes |
-|---|---|
-| Weight, BF16 | 2 |
-| Gradient, BF16 | 2 |
-| Weight ki FP32 copy | 4 |
-| Adam m, FP32 | 4 |
-| Adam v, FP32 | 4 |
-| **Total** | **16** |
+Is example mein gradient kehta hai weight `2` ko badhao, kyunki prediction kam pad gayi. Har weight ka apna gradient hota hai. 7 billion weights hon to 7 billion gradients hote hain. List ka shape weights jaisa hi hai.
+
+Gradient ke bina training andheri hai. Galati pata hai, lekin yeh nahi pata ki kaun sa weight us galati ke liye zimmedar hai aur use kis taraf dhakelna hai.
+
+Yeh list step ke beech banti hai, jab backward pass har weight ki zimmedari nikalta hai. Step khatam hote hi gradients pheke jaa sakte hain. Agle batch ke gradients naye hote hain. Peak memory us waqt hoti hai jab yeh list abhi zinda ho.
+
+7B, BF16 gradients = aur 14 GB.
+
+Ek layer pe yeh dikhta kaise hai. Chhoti table, 2 × 2 weights:
+
+```text
+weights          gradients
+[ 2.0  0.5 ]     [ +0.4  -0.1 ]
+[ 1.0  3.0 ]     [ -0.2  +0.7 ]
+```
+
+Dono tables same size ki hain. Left wala number model hai. Right wala number usi weight ka nudge hai. `+0.4` ka matlab pehla weight thoda badhe. `-0.1` ka matlab doosra weight thoda ghate.
+
+## Optimizer state kyun rakhte hain
+
+Sirf is ek ghar ke gradient pe weight ko chhod do, to ek ajeeb ghar model ko jhatke se door phenk sakta hai. Agli baar koi mehenga ghar aaya, gradient bahut bada nikla, weight 2 se seedha 50 ho gaya. Model paagal ho jaata hai.
+
+Adam ek diary rakhta hai, taaki ek jhatka poori diary ko na bigade. Har weight ki apni diary hai. Usme do numbers hain:
+
+- **m** — is weight ke pichle gradients ka average. Ek ajeeb ghar average ko thoda hilata hai, poora nahi.
+- **v** — is weight ke gradients kitne uchhal rahe hain. Zyada uchhal hon to step chhota lo. Shant hon to step bada lo.
+
+Agle ghar pe Adam poora gradient nahi maanta. Woh m aur v dekh kar ek calm step leta hai.
+
+`m` aur `v` agle batch ke liye zinda rehte hain. Unhe har step pe phenk nahi sakte, kyunki diary ka poora point pichli memory hai. Isliye yeh HBM mein hamesha baithi rehti hai, weights ki tarah.
+
+Dono lists weights jitni lambi hain, aur FP32 mein rehti hain. FP32 ek number 4 bytes ka hai. Chhote updates FP16 ke chhote dabbe mein fit nahi hote, isliye weight ki ek FP32 copy bhi rakhi jaati hai.
+
+Wahi 2 × 2 layer, Adam ke saath, ek saath char tables:
+
+```text
+weights BF16       gradients BF16
+[ 2.0  0.5 ]       [ +0.4  -0.1 ]
+[ 1.0  3.0 ]       [ -0.2  +0.7 ]
+
+Adam m             Adam v
+[ 0.3  -0.05 ]     [ 0.02  0.01 ]
+[ -0.1  0.4 ]      [ 0.01  0.08 ]
+```
+
+Plus weights ki FP32 copy, jo dikhne mein weights jaisi hi table hai, bas har number zyada precision ke saath.
+
+Adam mixed precision ka common hisaab, **har parameter pe lagbhag 16 bytes**. Activations is table mein nahi hain:
+
+| Cheez | Bytes | Step ke baad |
+|---|---|---|
+| Weight, BF16 | 2 | Rehti hai |
+| Gradient, BF16 | 2 | Phenki jaa sakti hai |
+| Weight ki FP32 copy | 4 | Rehti hai |
+| Adam m | 4 | Rehti hai |
+| Adam v | 4 | Rehti hai |
+| **Total** | **16** | |
 
 7B × 16 bytes = 112 GB.
 
-Yeh sirf weights, gradients, aur Adam ki state hai. Activations abhi include nahi hue. 80 GB wali H100 pe 7B ka full Adam fit nahi hota. OOM yahin se aata hai.
+Yeh 112 GB activations se pehle hai. 80 GB wali H100 pe 7B ka full Adam fit nahi hota. Batch 1 kar do, phir bhi yeh 112 GB nahi ghat ta, kyunki yeh list model ke size ki hai, batch ke size ki nahi.
 
-SGD jaise simple optimizer ke states chhote hote hain. LLM Adam use karte hain, isliye 16-byte wala number yaad rakhna hai.
+## Activation kyun rakhte hain
 
-## 4. Activations
+Ab model do layer ka hai.
 
-Forward pass ke beech ke outputs backward ke liye save hote hain. Inhe activations kehte hain.
+- Kamre = 3
+- Pehli layer: 3 × 2 = **6**. Yeh beech ka jawab hai.
+- Doosri layer: 6 × 1.5 = 9. Yeh final prediction hai.
 
-Weights batch badalne se nahi badhte. Activations badhte hain, kyunki har example aur har token ka apna beech-ka-hisaab save hota hai.
+**6 ko activation kehte hain.** Woh final jawab nahi hai. Woh beech ka number hai jo agle layer ko diya gaya.
 
-Do cheezein inhe bada karte hain:
+Wapas jaate waqt pehli weight (`2`) ko theek karna hai. Uske liye yeh beech wala 6 chahiye, kyunki doosri layer ne 6 ko use karke hi galati paida ki. Agar forward ke turant baad 6 phenk diya, to backward pehli layer tak pahunch hi nahi sakta. Ya to 6 save karo, ya pehli layer dobara chalao.
 
-- **Batch size** — ek saath jitne examples
-- **Sequence length** — ek example kitne tokens lamba hai
+Training save karna pasand karti hai, kyunki dobara chalana mehnga hai. Isliye forward ke beech ke numbers backward khatam hone tak HBM mein rehte hain. Backward khatam, activations phenk do. Agle batch ke activations naye hote hain.
 
-Sabse bhari cheez attention ka score matrix hai: batch × heads × sequence × sequence. Sequence double karo, yeh matrix chaar guna ho jaata hai. Lambi context pe OOM aksar yahin se aata hai.
+Activation ki shape weights jaisi nahi hoti. Weights ek layer ki table hain. Activation us batch ke har token ka beech ka jawab hai.
 
-Layer ke outputs alag se bhi save hote hain: batch × sequence × hidden size × layers. Yeh sequence ke saath seedha badhte hain, square nahi.
+Do sentences, har sentence 3 tokens, aur beech ka jawab 4 numbers lamba ho:
 
-FlashAttention baad mein aayega. Woh attention ka poora sequence × sequence matrix save kiye bina kaam karta hai. Uske baad bhi layer outputs reh jaate hain, aur bada batch ya lambi sequence unhe phir bhi badha deti hai.
+```text
+activation shape = [2 sentences, 3 tokens, 4 numbers]
+
+sentence 1
+  token "ghar"   [ 0.2  1.0  0.0  0.5 ]
+  token "bada"   [ 0.1  0.4  0.8  0.2 ]
+  token "hai"    [ 0.0  0.3  0.1  0.9 ]
+
+sentence 2
+  token "yeh"    [ 0.6  0.1  0.2  0.0 ]
+  token "sasta"  [ 0.2  0.7  0.4  0.1 ]
+  token "hai"    [ 0.3  0.0  0.5  0.8 ]
+```
+
+Weights is example mein 4 × 4 = 16 numbers ho sakte hain. Activation 2 × 3 × 4 = 24 numbers hai. Batch ya sentence lamba karo, activation badhegi. Weights nahi badhenge.
+
+Asli layer pe hidden size 4096 hota hai, sequence 1024 tokens, batch 2:
+
+2 × 1024 × 4096 = lagbhag 8 million numbers, **sirf ek layer ka ek output**. Model mein aisi layers 30-40 hoti hain, aur har layer ke andar kai beech ke numbers save hote hain.
+
+Attention ka score matrix aur bhi bura hai: batch × heads × sequence × sequence. Sequence double karo, yeh matrix chaar guna ho jaata hai. Lambi context pe OOM aksar yahin se aata hai.
 
 ## Do alag OOMs
 
-**Model bada hai.** Weights + gradients + Adam 80 GB cross kar jaate hain. Batch 1 kar do, phir bhi nahi ghusta. 7B Adam = 112 GB, activations se pehle.
+**Model bada hai.** Weights + gradients + Adam = 112 GB. Batch 1 se yeh nahi ghat ta. 80 GB se pehle hi bahar.
 
-**Batch ya context bada hai.** Model ghusta hai, lekin sequence lambi karte hi activations HBM bhar dete hain.
+**Batch ya context bada hai.** Model states ghus gaye, lekin sentences lambi karte hi activation ki `[batch, tokens, hidden]` list HBM bhar deti hai.
 
-Pehla OOM model size ka hai. Doosra OOM batch aur sequence ka hai. Dono ka ilaaj alag hai. Ilaaj baad ke dinon mein hai: mixed precision aur gradient checkpointing Day 5 pe, optimizer ko kai GPUs pe baantna Week 4 pe. Aaj sirf buckets pehchaanne hain.
+16 bytes wala number sirf pehli OOM ke liye hai. Activations uske upar alag se baithte hain, aur unka size batch aur sequence se aata hai.
