@@ -4,9 +4,9 @@
 > 
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
-> - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Week 1 — Assignment 1.1 done on Colab T4  
-> - **Active Task:** Day 7 — PyTorch Profiler practical, then Week 2  
+> - **Current Module:** Week 2 (Memory Coalescing, Shared Memory, Tiling, Cluster Interconnects)  
+> - **Current Submodule:** Week 2 notes — Day 8 through Day 14  
+> - **Active Task:** Read `01-cuda-fundamentals/docs/week2/` in order. Day 7 profiler is still open.  
 > - **Status:** In Progress
 
 ---
