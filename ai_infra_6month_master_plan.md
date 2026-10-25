@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Week 1 — Assignment 1.1 vector_add.cu  
-> - **Active Task:** Run `nvcc -arch=sm_75 vector_add.cu -o vector_add` on a Colab T4 and check kernel time plus mismatches  
+> - **Current Submodule:** Week 1 — Assignment 1.1 done on Colab T4  
+> - **Active Task:** Day 7 — PyTorch Profiler practical, then Week 2  
 > - **Status:** In Progress
 
 ---
