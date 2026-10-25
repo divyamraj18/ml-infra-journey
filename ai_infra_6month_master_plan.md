@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Day 4 — CUDA Execution Model and Coalesced Access  
-> - **Active Task:** Day 4 concepts (kernel launch, blocks on SMs, warps, coalesced vs strided HBM reads)  
+> - **Current Submodule:** Day 5 — Mixed Precision and Gradient Checkpointing  
+> - **Active Task:** Day 5 concepts (FP32, FP16, BF16, FP8, why Adam stays FP32, checkpointing trades compute for activation memory)  
 > - **Status:** In Progress
 
 ---
