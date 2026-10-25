@@ -41,7 +41,15 @@ Yeh wahi Day 3 wali table hai:
 | Adam v, FP32 | 4 |
 | **Total** | **16** |
 
-7B × 16 = 112 GB. Mixed precision yeh 112 GB aadhi nahi karti. `m`, `v`, aur FP32 copy 4 bytes hi rehte hain.
+7B × 16 = 112 GB. Mixed precision yeh 112 GB aadhi nahi karti. `m`, `v`, aur weight ki FP32 copy 4 bytes hi rehte hain. Yahi 112 GB ka bada hissa hai: 4 + 4 + 4 = 12 bytes. BF16 wali do lists sirf 2 + 2 = 4 bytes hain.
+
+BF16 sirf activations ke liye nahi hai. Teen jagah lagta hai:
+
+- woh weight jo matmul padhti hai
+- gradient
+- activation
+
+Adam ki diary (`m`, `v`) aur weight ki FP32 copy BF16 mein nahi jaati. Activations is 112 GB mein hain hi nahi. Unka alag size hai, aur wahan 4 bytes se 2 bytes hone ki bachaat hoti hai.
 
 Asli bachaat do jagah hai:
 

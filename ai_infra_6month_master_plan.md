@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Day 5 — Mixed Precision and Gradient Checkpointing  
-> - **Active Task:** Day 5 concepts (FP32, FP16, BF16, FP8, why Adam stays FP32, checkpointing trades compute for activation memory)  
+> - **Current Submodule:** Day 6 — Ampere, Hopper, Blackwell  
+> - **Active Task:** Day 6 concepts (HBM generations, Tensor Core formats, NVLink, TMA, Thread Block Clusters, Transformer Engine, PyTorch Profiler vs nsys/ncu)  
 > - **Status:** In Progress
 
 ---
