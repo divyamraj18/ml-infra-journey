@@ -5,8 +5,8 @@
 
 > - **Student:** Divyam Raj (Senior Engineer Infra)  
 > - **Current Module:** Week 1 (GPU Architecture & Low-Level CUDA Programming)  
-> - **Current Submodule:** Day 6 — Ampere, Hopper, Blackwell  
-> - **Active Task:** Day 6 concepts (HBM generations, Tensor Core formats, NVLink, TMA, Thread Block Clusters, Transformer Engine, PyTorch Profiler vs nsys/ncu)  
+> - **Current Submodule:** Week 1 — Assignment 1.1 vector_add.cu  
+> - **Active Task:** Run `nvcc -arch=sm_75 vector_add.cu -o vector_add` on a Colab T4 and check kernel time plus mismatches  
 > - **Status:** In Progress
 
 ---
@@ -19,7 +19,8 @@ This repository documents an end-to-end 6-Month Master Learning Plan (26 Weeks) 
 
 ```text
 01-cuda-fundamentals/                 # Month 1 (Weeks 1–4)
-  docs/
+  docs/week1/                         # Days 1–7
+  docs/week2/                         # Days 8–14
   assignments/01-vector-add/          # Assignment 1.1
   assignments/02-matrix-mul-tiled/    # Assignment 1.2
   kernels/                            # Assignment 1.3
