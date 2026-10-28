@@ -1,14 +1,14 @@
-# Day 9: InfiniBand, RoCE, aur TCP kyun nahi chalega
+# Day 9: InfiniBand, RoCE, and why TCP is too slow
 
-Day 8 box ke andar khatam hota hai. NVSwitch ka last port chassis pe rukta hai. Do DGX machines ke beech ka traffic **inter-node** hai. Uske liye NIC aur ek alag fabric chahiye.
+Day 8 ends at the box. The last NVSwitch port stops at the chassis. Traffic between two DGX machines is **inter-node**. That needs a NIC and a separate fabric.
 
-## TCP/IP wala raasta
+## The TCP/IP path
 
-GPU ke paas jo gradient pada hai woh HBM mein hai. TCP use socket se bhejta hai, aur socket CPU ki DRAM pe hai. Bina RDMA ke path yeh hai:
+The gradient on the GPU lives in HBM. TCP sends through a socket, and the socket lives in CPU DRAM. Without RDMA the path is:
 
 ```text
 GPU0 HBM
-  -> cudaMemcpy, PCIe
+  -> cudaMemcpy over PCIe
 CPU0 DRAM
   -> kernel TCP stack: copy, checksum, context switch
 NIC0
@@ -16,67 +16,67 @@ NIC0
 NIC1
   -> kernel TCP
 CPU1 DRAM
-  -> cudaMemcpy, PCIe
+  -> cudaMemcpy over PCIe
 GPU1 HBM
 ```
 
-Payload do baar PCIe pe chalti hai, aur beech mein CPU kernel ke through. Har chhote message pe syscall hai. Latency tens to hundreds of microseconds. Bandwidth CPU aur PCIe pe atak jaati hai, NIC ke wire rate pe nahi.
+The payload crosses PCIe twice, and the CPU kernel sits in the middle. Every small message is a syscall. Latency is tens to hundreds of microseconds. Bandwidth stalls on the CPU and on PCIe, not on the NIC's wire rate.
 
-LLM training mein yeh har step pe hota hai. Data parallel har step **AllReduce** karta hai: har GPU ke gradients ko sum karke sabko wahi sum wapas dena. 7B model, BF16 gradients = `7e9 × 2 bytes = 14 GB`. Yeh 14 GB har step pe fabric pe move hote hain.
+LLM training does this every step. Data parallel runs an **AllReduce** every step: sum every GPU's gradients, then give that same sum back to every GPU. A 7B model in BF16 has `7e9 × 2 bytes = 14 GB` of gradients. Those 14 GB move across the fabric every step.
 
-Ring AllReduce ka data volume, baad mein Day 11 pe detail se, lagbhag `2 × S` bytes bhejta hai jab GPUs bahut hon. Ek NIC, 400 Gb/s:
+Ring AllReduce, covered properly on Day 11, sends about `2 × S` bytes when there are many GPUs. One NIC at 400 Gb/s:
 
 ```text
 S = 14 GB = 112 Gb
 2S / 400 Gb/s ≈ 0.56 s
 ```
 
-Yeh ek single-rail, overlap ke bina, upper-bound sketch hai. Asli NCCL isse better karta hai kyunki 8 NICs aur compute overlap hota hai. Point yeh hai: TCP is number ko aur bigaad deta hai, kyunki 400 Gb/s tak pahunchta hi nahi. Agar compute step 100 ms ka hai aur network 500 ms ka, to GPU us 500 ms mein khali baitha hai. Wahi Day 2 wala stall, ab HBM ki jagah network.
+This is a single-rail sketch with no overlap. It is an upper bound, not a measured step time. Real NCCL does better because a node has 8 NICs and the collective overlaps with compute. The point is that TCP makes this number worse, because TCP never reaches 400 Gb/s. If the compute step is 100 ms and the network takes 500 ms, the GPU sits idle for those 500 ms. Same stall as Day 2, except the wait is the network instead of HBM.
 
 ## InfiniBand
 
-**InfiniBand (IB)** HPC ka fabric hai. Ethernet nahi hai. Link layer **credit-based** hai: sender tabhi packet daalta hai jab receiver ne credits diye hon. Switch buffer full hone se pehle traffic rukta hai. Packet drop design ka hissa nahi hai. TCP ki tarah drop karke retransmit nahi karna padta.
+**InfiniBand (IB)** is an HPC fabric. It is not Ethernet. The link layer is **credit-based**: the sender puts a packet on the wire only after the receiver has granted credits. Traffic stops before a switch buffer overflows. Dropping packets is not part of the design. There is no TCP-style drop and retransmit.
 
-RDMA InfiniBand pe native hai. NIC remote machine ki registered memory mein seedha likhta hai. CPU us payload ko touch nahi karta.
+RDMA is native on InfiniBand. The NIC writes straight into registered memory on the remote machine. The CPU does not touch that payload.
 
-Generations, jo clusters pe dikhengi:
+Generations you will see in clusters:
 
-| Gen | Per-port rate | NIC jo aksar saath aata hai |
+| Generation | Per-port rate | NIC that usually comes with it |
 |---|---|---|
 | HDR | 200 Gb/s | ConnectX-6 |
 | NDR | 400 Gb/s | ConnectX-7 |
-| XDR | 800 Gb/s | agla generation |
+| XDR | 800 Gb/s | next generation |
 
-DGX H100 typically **8× ConnectX-7**, har ek 400 Gb/s NDR, aur **Quantum-2** InfiniBand switches. 8 NICs isliye kyunki 8 GPUs hain: ek GPU ka ek NIC, ek **rail**. Rail Day 12 pe topology ban jaayega.
+A DGX H100 typically has **8 ConnectX-7** NICs, each 400 Gb/s NDR, and **Quantum-2** InfiniBand switches. There are 8 NICs because there are 8 GPUs: one NIC per GPU, one **rail**. A rail becomes a topology on Day 12.
 
-Chhote messages pe latency ~1 microsecond ki class mein hai, TCP ke tens of microseconds ke against. Bade gradients pe limit port ki bandwidth hai, syscall nahi.
+Small messages land in the ~1 microsecond class, against tens of microseconds for TCP. Large gradients are limited by the port bandwidth, not by a syscall.
 
 ## RoCE
 
-**RoCE** = RDMA over Converged Ethernet. RDMA ke verbs (queue pair, write, read) wahi hain, lekin wire Ethernet hai.
+**RoCE** means RDMA over Converged Ethernet. The RDMA verbs (queue pair, write, read) are the same. The wire is Ethernet.
 
-**RoCE v2** UDP/IP mein wrap hota hai, isliye routers ke across jaa sakta hai. UDP port **4791**. RoCE v1 sirf ek L2 subnet mein tha. Clusters v2 use karte hain.
+**RoCE v2** is wrapped in UDP/IP, so it can cross routers. The UDP port is **4791**. RoCE v1 stayed inside one L2 subnet. Clusters use v2.
 
-Ethernet default mein drop kar sakta hai. RDMA drop pasand nahi karta, kyunki uske paas TCP jaisa reliable byte stream nahi hai. Isliye RoCE ko ek managed fabric chahiye:
+Ethernet can drop packets by default. RDMA does not want drops, because it does not have TCP's reliable byte stream. RoCE therefore needs a managed fabric:
 
-- **PFC** (Priority Flow Control): ek priority ko pause frame se roko, poore link ko nahi. Loss kam hota hai. Galat config pe **PFC storm** aur head-of-line blocking hota hai. Poora cluster pause pe atak sakta hai.
-- **ECN**: switch packet ko drop karne se pehle mark karta hai.
-- **DCQCN**: sender ECN dekh kar apni rate ghatata hai. RoCE ka congestion control.
+- **PFC** (Priority Flow Control) pauses one priority with a pause frame, not the whole link. That reduces loss. A bad config causes a **PFC storm** and head-of-line blocking. The whole cluster can stall on pause frames.
+- **ECN** lets the switch mark a packet before it drops it.
+- **DCQCN** is the sender's reaction to ECN: it cuts its rate. That is RoCE congestion control.
 
-IB yeh sab credit se khud karta hai. RoCE yeh sab switch config se karta hai. Config sahi ho to bandwidth IB ke kareeb hoti hai. Config kharab ho to training "sahi" chalti hai aur step time 2× ho jaata hai. Debug Day 12 pe hai.
+InfiniBand gets the same property from credits. RoCE gets it from switch config. With a correct config, bandwidth is close to InfiniBand. With a bad config, training still produces the right loss and the step time doubles. Debugging that is Day 12.
 
-## Kaun sa fabric
+## Which fabric
 
 | | InfiniBand | RoCE v2 |
 |---|---|---|
-| Wire | Apna IB fabric | Ethernet |
-| Loss | Credits, drop nahi | PFC + ECN + DCQCN se bachao |
-| RDMA | Native | Same verbs, UDP pe |
-| Ops cost | Alag switches, alag tooling | Ethernet jo already hai, lekin PFC nazuk hai |
-| Kidhar dikhega | DGX SuperPOD, NVIDIA reference | Bahut saare cloud GPU clusters |
+| Wire | Its own IB fabric | Ethernet |
+| Loss | Credits, no drops | Avoid drops with PFC + ECN + DCQCN |
+| RDMA | Native | Same verbs, on UDP |
+| Ops cost | Separate switches, separate tooling | Ethernet you may already run, but PFC is fragile |
+| Where you see it | DGX SuperPOD, NVIDIA reference designs | Many cloud GPU clusters |
 
-Dono ka data path RDMA hai. TCP unmein se koi nahi hai. Agar `NCCL` log mein `Socket` dikhe, to tum inme se kisi pe nahi ho. Woh Day 12 ka pehla check hai.
+Both data paths are RDMA. Neither is TCP. If an NCCL log says `Socket`, you are on neither of them. That is the first check on Day 12.
 
-## Aaj ka rule
+## Rule for today
 
-NVSwitch box ke andar. Box ke bahar **InfiniBand ya RoCE**, dono RDMA. TCP GPU gradient ko CPU DRAM aur kernel se guzaarta hai, isliye LLM ke step time mein GPU ko network ka intezaar karna padta hai.
+NVSwitch stays inside the box. Outside the box the fabric is **InfiniBand or RoCE**, and both are RDMA. TCP drags a GPU gradient through CPU DRAM and the kernel, so the GPU waits on the network during the step.

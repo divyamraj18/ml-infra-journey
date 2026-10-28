@@ -1,14 +1,14 @@
 # Week 2
 
-Padhne ka order. Har file ek din hai. Assignment 1.2 ka CUDA code abhi nahi hai.
+Read in this order. Each file is one day. Assignment 1.2 CUDA code is not written yet.
 
-| File | Sawaal |
+| File | Question it answers |
 |---|---|
-| [day8.md](day8.md) | Ek box ke andar 8 GPUs kaise jude hain, aur tiled GEMM SRAM mein data kyun lata hai? |
-| [day9.md](day9.md) | Box ke bahar InfiniBand aur RoCE kya hain, aur TCP gradient kyun nahi le ja sakta? |
-| [day10.md](day10.md) | RDMA aur GPUDirect pe CPU payload ko touch kahaan karta hai? |
-| [day11.md](day11.md) | AllReduce, AllGather, ReduceScatter kis parallelism ka hai, aur ring pe kitne bytes jaate hain? |
-| [day12.md](day12.md) | `NCCL_DEBUG=INFO` mein kaun si line batati hai ki tum Socket pe gir gaye? |
-| [day13-14.md](day13-14.md) | 4+4 GPUs pe AllReduce ka chunk NVLink pe rehta hai aur rail pe kab chadhta hai? |
+| [day8.md](day8.md) | How do 8 GPUs inside one box talk, and why does tiled GEMM load data into SRAM? |
+| [day9.md](day9.md) | What are InfiniBand and RoCE, and why can't TCP carry gradients? |
+| [day10.md](day10.md) | Where does the CPU still touch the payload on an RDMA / GPUDirect path? |
+| [day11.md](day11.md) | Which parallelism uses AllReduce, AllGather, and ReduceScatter, and how many bytes does a ring move? |
+| [day12.md](day12.md) | Which `NCCL_DEBUG=INFO` line means you fell back to TCP sockets? |
+| [day13-14.md](day13-14.md) | On 4+4 GPUs, when does an AllReduce chunk stay on NVLink, and when does it cross a rail? |
 
-Week 1 ka coalescing [day4](../week1/day4.md) hai. Day 8 usi 128-byte sector ko alignment, stride, aur bank conflicts tak le jaata hai.
+Week 1 coalescing is in [day4](../week1/day4.md). Day 8 extends that 128-byte sector with alignment, stride, and bank conflicts.

@@ -1,47 +1,47 @@
 # Day 10: RDMA
 
-Day 9 ne kaha ki gradient CPU ke TCP stack se nahi guzarna chahiye. **RDMA (Remote Direct Memory Access)** woh mechanism hai. NIC remote machine ki memory mein likhta hai. Remote CPU `recv()` nahi chalaata.
+Day 9 said a gradient should not pass through the CPU TCP stack. **RDMA (Remote Direct Memory Access)** is that mechanism. The NIC writes into memory on the remote machine. The remote CPU does not run `recv()`.
 
-## Do machines, beech mein NIC
+## Two machines, a NIC in the middle
 
-Har side pe ek **RNIC** hota hai. DGX pe yeh ConnectX hai. RNIC userspace se registered memory ka physical address jaanta hai, isliye kernel se permission leke DMA karta hai.
+Each side has an **RNIC**. On a DGX that is a ConnectX. The RNIC knows the physical address of memory that userspace registered, so it can DMA after the kernel has granted that mapping.
 
-Teen objects yaad rakhne hain:
+Three objects to keep:
 
-| Object | Kya hai |
+| Object | What it is |
 |---|---|
-| **Queue Pair (QP)** | Send Queue + Receive Queue. Ek connection ka endpoint. TCP socket ka RDMA wala cousin, lekin payload kernel se nahi guzarta. |
-| **Completion Queue (CQ)** | NIC yahan likhta hai ki kaun sa work request khatam hua. CPU poll karta hai. Interrupt zaroori nahi. |
-| **Memory Region (MR)** | Pages jo NIC ke liye pin ho chuke hain. **lkey** local access ke liye, **rkey** remote writer ke liye. Bina rkey ke remote NIC tumhari memory nahi chhoo sakta. |
+| **Queue Pair (QP)** | A Send Queue plus a Receive Queue. The endpoint of one connection. The RDMA cousin of a TCP socket, except the payload does not enter the kernel. |
+| **Completion Queue (CQ)** | The NIC writes here when a work request finishes. The CPU polls it. An interrupt is not required. |
+| **Memory Region (MR)** | Pages pinned for the NIC. **lkey** is for local access. **rkey** is for a remote writer. Without the rkey, the remote NIC cannot touch your memory. |
 
-**Protection Domain** in keys ko ek group mein band karta hai, taaki doosre process ka QP tumhara MR use na kar le.
+A **Protection Domain** groups those keys so another process's QP cannot use your MR.
 
-Setup pe CPU ab bhi kaam karti hai: pages pin karo, QP banao, remote ko apna rkey aur address bhejo. Yeh control messages chhote hote hain. **Bootstrap** aksar TCP se hota hai. Data path uske baad RDMA hai. Bootstrap ko data path mat samajh lena.
+The CPU still does setup: pin pages, create the QP, send the remote side your rkey and address. Those control messages are small. **Bootstrap** is often still TCP. The data path after that is RDMA. Do not confuse bootstrap with the data path.
 
 ## Verbs
 
-| Verb | Kaun active hai | LLM mein |
+| Verb | Who is active | In an LLM job |
 |---|---|---|
-| **SEND / RECV** | Dono side. Receiver pehle recv buffer post karta hai, sender usme SEND karta hai. | Chhote control messages. |
-| **WRITE** | Sirf sender. Remote address + rkey pe seedha likhta hai. Remote CPU involved nahi. | Bade gradient chunks. NCCL ka common data path. |
-| **READ** | Sirf sender. Remote se kheenchta hai. | Kam, jab pull chahiye. |
-| **Atomic** | Fetch-and-add, compare-and-swap, NIC pe. | Locks, counters. Collectives ka bulk data nahi. |
+| **SEND / RECV** | Both sides. The receiver posts a buffer first. The sender SENDs into it. | Small control messages. |
+| **WRITE** | Sender only. It writes to a remote address plus rkey. The remote CPU is not involved. | Large gradient chunks. NCCL's common data path. |
+| **READ** | Sender only. It pulls from the remote side. | Less common. Used when the sender wants to pull. |
+| **Atomic** | Fetch-and-add or compare-and-swap, executed on the NIC. | Locks and counters. Not the bulk of a collective. |
 
-WRITE **one-sided** hai. Remote application ko us packet ka callback nahi chahiye. NIC ne DMA kar diya, memory badal gayi. Sender ko completion CQ pe milta hai.
+WRITE is **one-sided**. The remote application does not get a callback for that packet. The NIC DMA'd it, and the memory changed. The sender learns completion from its CQ.
 
 ## Kernel bypass
 
-TCP pe har `send()` syscall hai. Kernel buffer copy karta hai, TCP state machine chalata hai.
+On TCP, every `send()` is a syscall. The kernel copies the buffer and runs the TCP state machine.
 
-RDMA pe process apna QP **doorbell** MMIO se bajaata hai. Work request NIC ki queue mein chala jaata hai. Chhote message pe syscall nahi hoti. CPU payload ko read nahi karti. Isliye latency NIC + PCIe + switch hops hai, kernel scheduling nahi.
+On RDMA, the process rings the QP **doorbell** with an MMIO write. The work request lands on the NIC's queue. A small message does not take a syscall. The CPU does not read the payload. Latency is the NIC, PCIe, and switch hops, not kernel scheduling.
 
-Yeh "CPU band hai" nahi hai. CPU work request banati hai aur CQ poll karti hai. Jo CPU nahi karti: payload copy, checksum, aur remote side pe `recv()`.
+This does not mean the CPU is idle. The CPU builds the work request and polls the CQ. What the CPU does not do: copy the payload, checksum it, or run `recv()` on the remote side.
 
 ## GPUDirect RDMA
 
-Abhi tak RDMA host DRAM ki baat thi. Gradient HBM mein hai. Bina **GPUDirect RDMA** ke NIC sirf host DRAM DMA kar sakta hai, isliye pehle `cudaMemcpy` HBM → DRAM, phir RDMA. PCIe do baar.
+So far, RDMA was about host DRAM. The gradient is in HBM. Without **GPUDirect RDMA**, the NIC can DMA only host DRAM, so you first `cudaMemcpy` from HBM to DRAM, then RDMA. That is PCIe twice.
 
-GPUDirect RDMA pe GPU ki memory bhi ek MR ban jaati hai. NIC ka DMA engine HBM tak pahunchta hai, GPU aur NIC ke beech peer mapping se. Kernel module purane stacks pe `nvidia-peermem` hai. Naye drivers mein yeh support driver ke andar hai.
+With GPUDirect RDMA, GPU memory is also an MR. The NIC's DMA engine reaches HBM through a peer mapping between the GPU and the NIC. On older stacks the kernel module is `nvidia-peermem`. On newer drivers that support lives inside the driver.
 
 ```text
 TCP
@@ -51,18 +51,18 @@ GPUDirect RDMA
   HBM --DMA-- NIC --wire-- NIC --DMA-- HBM
 ```
 
-Condition: NIC aur GPU **paas** hone chahiye. Same PCIe switch (**PIX**) best hai. CPU socket ke across (**SYS**) GPUDirect band ho sakta hai, kyunki DMA ko QPI/UPI cross karna padta hai. `nvidia-smi topo -m` yeh distance dikhata hai. Legend Day 12 pe hai.
+The NIC and the GPU have to be **close**. The same PCIe switch (**PIX**) is the best case. Across CPU sockets (**SYS**), GPUDirect may be disabled, because the DMA would cross QPI or UPI. `nvidia-smi topo -m` prints that distance. The legend is on Day 12.
 
-## Latency aur bandwidth alag hain
+## Latency and bandwidth are different
 
-Day 2 wala farq yahan bhi hai.
+Same split as Day 2.
 
-**Chhota message**, jaise koi sync flag. Time = PCIe + NIC + ek switch hop. Bandwidth matter nahi karti. 64 bytes 400 Gb/s pe nanoseconds ka wire time hai, lekin setup microseconds le sakta hai. Isse **latency-bound** kehte hain.
+A **small message**, such as a sync flag. Time = PCIe + NIC + one switch hop. Bandwidth does not matter. 64 bytes on a 400 Gb/s link is nanoseconds of wire time, but setup can take microseconds. That message is **latency-bound**.
 
-**Bada message**, 14 GB gradients. Time ≈ size / bandwidth. 400 Gb/s rail pe seconds ke fractions. CPU bypass ho chuka hai, ab limit optical port hai. Isse **bandwidth-bound** kehte hain.
+A **large message**, 14 GB of gradients. Time ≈ size / bandwidth. On a 400 Gb/s rail that is a fraction of a second. The CPU is already off the path. The limit is the optical port. That message is **bandwidth-bound**.
 
-NCCL dono ke liye alag protocol rakhta hai. Chhote ke liye **LL** (low latency), bade ke liye **Simple**. Beech mein **LL128**. Day 12 ke log mein yeh naam dikhenge. Protocol galat ho to chhota AllReduce bhi bandwidth wale overhead pe chal padta hai.
+NCCL uses different protocols for the two. **LL** (low latency) for small messages. **Simple** for large ones. **LL128** sits in between. Those names show up in the Day 12 log. The wrong protocol makes a small AllReduce pay the large-message overhead.
 
-## Aaj ka rule
+## Rule for today
 
-RDMA = NIC remote MR pe WRITE/READ karta hai, rkey ke saath, remote CPU ke `recv()` ke bina. GPUDirect wohi DMA HBM tak le jaata hai. TCP wala CPU copy is path mein nahi hai. Chhota message latency se atakta hai, bada gradient bandwidth se.
+RDMA means the NIC WRITE or READ on a remote MR, using an rkey, without the remote CPU calling `recv()`. GPUDirect extends that DMA into HBM. The TCP CPU copy is not on this path. A small message is limited by latency. A large gradient is limited by bandwidth.
