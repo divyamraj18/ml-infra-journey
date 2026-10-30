@@ -1,14 +1,19 @@
-# Day 8: NVLink, NVSwitch, coalescing rules, bank conflicts, tiled GEMM
+# Day 8: NVLink, NVSwitch, coalescing, bank conflicts, tiled GEMM
 
-Week 1 followed traffic inside one GPU: DRAM, then PCIe, then HBM, then SRAM, then registers. This week asks two new questions. How do 8 GPUs inside one box talk to each other, and how should one GPU read global memory and shared memory so it does not waste bandwidth?
+Week 1 mein traffic ek GPU ke andar tha: DRAM, phir PCIe, phir HBM, phir SRAM, phir registers. Is hafte do sawal hain.
 
-## Intra-node: PCIe, NVLink, NVSwitch
+1. Ek box ke andar 8 GPUs ek doosre se kaise baat karte hain?
+2. Ek GPU memory se data kaise uthaye, taaki jo trip lagi, usme har byte kaam aaye?
 
-**Intra-node** means one machine, one chassis. A DGX H100 is the example: 8 H100 GPUs in one box.
+## Ek box ke andar: PCIe, NVLink, NVSwitch
 
-**PCIe** connects a GPU to the CPU and to the NIC. Gen4 x16 is about 32 GB/s per direction. Gen5 x16 is about 64 GB/s. That is too thin for GPU-to-GPU traffic. Two H100s talking only over PCIe leave their 3.35 TB/s of HBM idle, waiting on that link.
+**Intra-node** ka matlab ek hi machine, ek hi chassis. DGX H100 uska example hai: 8 H100 GPUs ek box mein.
 
-**NVLink** is a direct GPU-to-GPU link.
+Socho 8 factories ek campus mein hain. Unke beech samaan bhejne ke teen raaste hain.
+
+**PCIe** campus ki sadharan sadak hai. GPU ko CPU aur NIC se yahi jodti hai. Gen4 x16 lagbhag 32 GB/s per direction hai. Gen5 x16 lagbhag 64 GB/s. Do H100 ki HBM lagbhag 3.35 TB/s hai. Agar woh sirf is sadak se baat karein, to factories ka maal sadak pe atak jaata hai. GPU idle baithta hai.
+
+**NVLink** factories ke beech ki dedicated expressway hai. PCIe se kai guna chaudi.
 
 | GPU | NVLink generation | Bidirectional bandwidth |
 |---|---|---|
@@ -16,112 +21,193 @@ Week 1 followed traffic inside one GPU: DRAM, then PCIe, then HBM, then SRAM, th
 | H100 | 4th | ~900 GB/s |
 | B200 | 5th | ~1.8 TB/s |
 
-An H100 has 18 NVLink 4 links. One link is about 25 GB/s per direction. `18 × 25 × 2 = 900 GB/s` bidirectional. That is the Day 6 number.
+H100 pe 18 NVLink 4 links hote hain. Ek link lagbhag 25 GB/s per direction hai. `18 × 25 × 2 = 900 GB/s` bidirectional. Yeh Day 6 wala number hai.
 
-**NVSwitch** is a crossbar chip. Without a switch, NVLink only reaches a few neighboring GPUs. The switch connects every GPU to every other GPU at full bandwidth.
+**NVSwitch** interchange hai. Bina switch ke expressway sirf padosi factory tak jaati hai. Switch har factory ko har doosri factory se full speed pe jod deta hai.
 
 DGX H100:
 
 - 8 H100 GPUs
 - 4 third-generation NVSwitch chips
-- A GPU is not wired directly to another GPU. Each GPU plugs its NVLink links into the switches.
-- Any pair, including GPU3 and GPU7, can talk through NVSwitch at about 900 GB/s.
+- GPU seedha GPU se wire nahi hoti. Har GPU apni NVLink links switch mein daalti hai.
+- Koi bhi pair, jaise GPU3 aur GPU7, NVSwitch ke through ~900 GB/s pe baat kar sakta hai.
 
-This is only inside the box. NVLink stops at the chassis. The next day, InfiniBand, starts outside it.
+Yeh sirf box ke andar hai. Box ke bahar NVLink khatam. Agle din ka InfiniBand wahan se shuru hota hai.
 
 ```text
         NVSwitch  NVSwitch  NVSwitch  NVSwitch
           |  \      |  \      |  \      |  \
         GPU0 GPU1 GPU2 GPU3 GPU4 GPU5 GPU6 GPU7
           |    |    |    |    |    |    |    |
-         PCIe / NIC   ... these links leave the box. They are not NVLink.
+         PCIe / NIC   ... yeh links box se bahar jaati hain. Yeh NVLink nahi hai.
 ```
 
-## Coalescing rules
+## Coalescing: warehouse aur truck
 
-Day 4: one warp, 32 threads, one **128-byte sector**. 32 floats × 4 bytes = 128 bytes. Best case is one transaction, and every byte is useful.
+GPU ki global memory (HBM) ek bada warehouse hai. 32 threads ek saath samaan lene aate hain. Un 32 threads ko **warp** kehte hain.
 
-Rules for today:
+Warehouse se samaan lane ke liye truck ka size fixed hai. Us truck ko **sector** kehte hain. Size **128 bytes** hai.
 
-1. **The warp issues together.** Hardware merges 32 separate loads into as few 128-byte sectors as it can. The threads do not merge anything themselves.
-2. **Alignment.** A sector starts on a 128-byte boundary. If the warp's first address is not 128-byte aligned, those 128 bytes split across two sectors. Two transactions, and some bytes are wasted.
-3. **Stride.** Thread `t` reads element `t * stride`.
-   - `stride = 1`: consecutive floats. One sector. Coalesced.
-   - `stride = 2`: every other float. Half of the 128 bytes are useful. 50% of the bandwidth is wasted.
-   - `stride = 32`: each thread hits a different sector. 32 transactions. The bus moves `32 × 128` bytes, and the kernel only uses `32 × 4` bytes.
-4. **Row-major matrix.** Memory stores one row, then the next row. A warp that reads consecutive columns of one row has stride 1. A warp that reads one column has stride equal to the row width. On a 4096-wide row that stride is 4096. That access is uncoalesced.
+Truck chahe 1 float (4 bytes) uthaye ya 32 floats (128 bytes), trip ka cost same hai. Ek **memory transaction**. Isliye hum chahte hain ki ek trip mein jitna samaan aaye, sab use ho jaaye. Isi ko **coalesced access** kehte hain. Truck aadha khali gaya to **bandwidth waste** hoti hai.
 
-Assignment 1.1 followed this rule: thread `i` read `a[i]`, stride 1. The 66.84 GiB/s on the T4 was not lost to broken coalescing. That run was far from peak because the buffer was small and each load was a `float`, not a `float4`.
+### Rule 1: merge hardware karta hai
 
-## Shared memory bank conflicts
+32 threads khud aapas mein merge nahi karte. Woh ek saath request bhejte hain. GPU ka hardware dekhta hai ki unka data kin 128-byte sectors mein padta hai, aur un requests ko jod deta hai.
 
-Shared memory is SRAM, not HBM. A warp still reads it in one cycle only when 32 threads hit **32 different banks**.
+### Rule 2: alignment, 128-byte boundary
 
-There are 32 banks. Each bank is 4 bytes wide, one 32-bit word.
+Memory 128-byte ke blocks mein kati hui hai: 0–127, 128–255, 256–383, aage bhi.
+
+- Pehla thread aisi address se maange jo 128 se divide ho jaati hai (aligned). Saara data ek sector mein fit hota hai. **1 transaction.**
+- Pehla thread beech se shuru kare, maan lo address 64. Tab 128 bytes do sectors mein fail jaate hain: 64–127 pehle sector, 128–191 agla sector. Isko **misaligned access** kehte hain. Hardware ko **2 transactions** karni padti hain. Time waste hota hai.
+
+### Rule 3: stride
+
+**Stride** do consecutive threads ke beech kitne elements ka gap hai. Warp mein threads `t = 0` se `31` hain. Thread `t` element `t * stride` padhta hai.
+
+**Stride = 1. Best case. Coalesced.**
+
+Thread 0 element 0 padhta hai, thread 1 element 1, thread 31 element 31. Sab consecutive hain. 32 floats × 4 bytes = 128 bytes. Ek hi sector.
+
+**Result:** 1 memory transaction. Har byte useful. 0% waste.
+
+**Stride = 2. Aadha waste.**
+
+Thread 0 element 0, thread 1 element 2, thread 2 element 4, thread 31 element 62. Beech ke floats chhoot gaye. Jo 128 bytes truck laaya, usme se aadhe threads ne maange hi nahi.
+
+**Result:** 50% bandwidth waste.
+
+**Stride = 32. Worst case. Uncoalesced.**
+
+Thread 0 element 0, thread 1 element 32, thread 2 element 64, thread 31 element `31 × 32 = 992`. Har thread alag sector pe hai.
+
+**Result:** 32 alag transactions. Bus `32 × 128` bytes move karti hai. Kernel sirf `32 × 4` bytes use karta hai. Sabse slow case.
+
+### Rule 4: row-major matrix
+
+2D matrix memory mein 1D line ki tarah store hoti hai. Pehle row 0 ke saare elements, phir row 1, phir row 2. Isko **row-major** kehte hain.
+
+**Row ke along. Fast.**
+
+Ek hi row ke consecutive columns: `(row 0, col 0)`, `(row 0, col 1)`, `(row 0, col 2)`. Memory mein yeh chipke hue hain. **Stride = 1.** Fully coalesced.
+
+**Column ke along. Slow.**
+
+Ek hi column: `(row 0, col 0)`, `(row 1, col 0)`, `(row 2, col 0)`. Do rows ke beech poori row ki width ka gap hai. Row width 4096 ho to thread 0 aur thread 1 ke beech 4096 elements hain. **Stride = 4096.** Har thread alag sector.
+
+**Result:** fully uncoalesced. Kernel sahi jawab dega, speed gir jaayegi.
+
+Assignment 1.1 isi rule pe tha. Thread `i` ne `a[i]` padha, stride 1. T4 pe 66.84 GiB/s coalescing tootne se nahi aaya. Woh run peak se door isliye tha kyunki buffer chhota tha (12 MiB) aur har load ek `float` tha, `float4` nahi.
+
+## Shared memory: 32 cash counters
+
+Global memory ka truck HBM se aata hai. **Shared memory** SM ke andar ki SRAM hai, bahut tez, bahut chhoti. Yahan bhi ek warp ek saath padhta hai, lekin rule alag hai. Yahan **bank conflict** hota hai.
+
+Socho 32 cash counters hain. Inhe **banks** kehte hain. 32 threads ek saath paise nikalne aaye hain.
+
+- Ek counter pe ek time pe ek insaan deal karta hai, jab addresses alag hon.
+- Har bank 4 bytes ka hai, ek 32-bit word.
+- Bank nikalne ka formula:
 
 ```text
 word = byte_offset / 4
 bank = word % 32
 ```
 
-| Access | Result |
-|---|---|
-| Thread `t` reads `smem[t]` | 32 different banks. One transaction. |
-| Every thread reads the same address `smem[0]` | **Broadcast.** Not a conflict. One value is delivered to the whole warp. |
-| Thread `t` reads `smem[t * 32]` | Every address lands in bank 0, and the words are different. **32-way conflict.** 32 serial transactions. |
-| Some threads share an address, the rest hit different banks | Multicast. Only the distinct banks matter. |
+### Chaar cases
 
-A conflict does not make the answer wrong. It serializes SRAM bandwidth. The kernel stays correct and gets slow.
+**1. Conflict-free. Best case.**
 
-**Padding** is the usual fix. A tile that is 32 columns wide, read down a column, maps `row * 32 + col` onto the same bank every row, because `32 % 32 = 0`. Store it as if the row were 33 wide:
+32 threads 32 alag banks pe jaate hain. Thread `t` reads `smem[t]`.
+
+**Result:** ek cycle, ek transaction.
+
+**2. Broadcast. Conflict nahi.**
+
+Saare 32 threads ek hi address padhte hain, `smem[0]`. Hardware ek value uthakar sabko de deta hai.
+
+**Result:** 1 cycle. Yeh conflict nahi hai.
+
+**3. Bank conflict. Worst case.**
+
+Threads alag data maang rahe hain, lekin woh data ek hi bank pe pada hai. Thread `t` reads `smem[t * 32]`. Saare addresses bank 0 pe jaate hain, words alag hain.
+
+**Result:** **32-way conflict.** Hardware ek-ek karke 32 serial transactions karta hai. Code **galat nahi** hota. Speed girti hai. GPU ki SRAM bandwidth waste hoti hai.
+
+**4. Multicast.**
+
+Kuch threads same address pe hain, baaki alag banks pe. Sirf distinct banks count hote hain. Jitne unique banks, utni cycles.
+
+### Padding: extra column
+
+Matrix multiply ya transpose mein yeh problem tab aati hai jab tile **32 columns** wide ho aur tum column ke along neeche padho.
+
+`index = row * 32 + col` mein agli row ka wahi column `32` words door hai. `32 % 32 = 0`, isliye har row ka wahi column **same bank** pe girta hai. 32-way conflict.
+
+**Fix:** row ko 32 ki jagah 33 wide banao.
 
 ```text
 index = row * (32 + 1) + col
 ```
 
-The same column in the next row is 33 words away. `33 % 32 = 1`, so the next row hits the next bank. One extra column is wasted, and the conflicts go away.
+Agli row ka wahi column 33 words door hai. `33 % 32 = 1`, to woh **agle bank** pe chala jaata hai. Conflicts khatam.
 
-On H100, shared memory is configurable up to **228 KB per SM**. On A100 it is **164 KB**. The tile has to fit. If it does not, the launch fails or occupancy drops.
+**Trade-off:** ek extra column memory mein waste hota hai. Badle mein serial transactions hat jaate hain aur speed badh jaati hai.
+
+### Kitni shared memory milti hai
+
+Shared memory chip ke andar hai, isliye limited hai.
+
+| GPU | Max shared memory per SM |
+|---|---|
+| A100 | 164 KB |
+| H100 | 228 KB |
+
+Tile is limit mein fit hona chahiye. Bahut bada tile ho to kernel launch fail ho sakti hai, ya ek SM pe kam blocks chalenge. Us girawat ko **occupancy drop** kehte hain.
 
 ## Tiled matrix multiplication
 
 `C[M, N] = A[M, K] × B[K, N]`.
 
-`C[i, j]` is a dot product of length K: row `A[i, :]` with column `B[:, j]`.
+`C[i, j]` ek lamba dot product hai: `A` ki row `i` aur `B` ka column `j`.
 
-**Naive.** One thread computes one `C[i, j]` and reads the `k` loop from global memory. If a warp owns consecutive `j`, then `B[k][j]` is coalesced and `A[i][k]` is a broadcast. Coalescing can be fine. The problem is reuse.
+**Naive.** Ek thread ek `C[i, j]` banata hai aur `k` loop global memory se padhta hai. Warp consecutive columns le to `B` ka load coalesced ho sakta hai, aur `A` ka wahi element broadcast ho sakta hai. Coalescing theek ho sakti hai. Problem **reuse** ki hai.
 
-One element of `A` is used by N output columns. At 4096×4096, N is 4096. `A` itself is `4096 × 4096 × 4 = 64 MB`. A100 L2 is 40 MB. H100 L2 is 50 MB. The whole of `A` does not stay in L2, so that element comes back from HBM again and again. Arithmetic intensity looks high on paper. On the machine the kernel is memory-bound.
+`A` ka ek element N output columns mein use hota hai. 4096×4096 pe N = 4096. `A` khud `4096 × 4096 × 4 = 64 MB` hai. A100 ki L2 40 MB hai. H100 ki L2 50 MB. Poori `A` L2 mein nahi rehti, isliye wahi element baar baar HBM ke warehouse se aata hai. Paper pe arithmetic intensity high hai. Machine pe kernel memory-bound ho jaata hai.
 
-**Tiling** forces the reuse into SRAM. A block computes one `BM × BN` tile of `C`. K is walked in steps of `BK`.
+**Tiling** ka matlab: poora warehouse mat ghumo. Ek chhoti tray workbench (shared memory) pe rakh lo, aur table ke saare threads usi tray ko baar baar use karein.
+
+Block `C` ka ek `BM × BN` tile compute karta hai. K ko `BK` ke steps mein toda jaata hai.
 
 ```text
 acc = 0
 for k0 in 0, BK, 2*BK, ... K:
     coalesced load A[i0 : i0+BM, k0 : k0+BK]  -> shared As
     coalesced load B[k0 : k0+BK, j0 : j0+BN]  -> shared Bs
-    __syncthreads()          # every thread has finished the load
+    __syncthreads()          # sabka load complete
     for kk in 0 .. BK-1:
         acc += As[local_row][kk] * Bs[kk][local_col]
-    __syncthreads()          # nobody reads the old As while the next tile loads
+    __syncthreads()          # agli tray se pehle koi purani As na padhe
 C[i, j] = acc
 ```
 
-`__syncthreads()` waits for every thread in the block. It is not a warp barrier. Two blocks do not share SRAM, so the barrier is only inside one block.
+`__syncthreads()` block ke saare threads ko rokta hai. Yeh warp ka barrier nahi hai. Do blocks SRAM share nahi karte, isliye sync bhi sirf apne block ke andar hai.
 
-Small picture, `BM = BN = BK = 2`. The block owns the top-left 2×2 of `C`.
+Chhota picture. `BM = BN = BK = 2`. Block `C` ke top-left 2×2 pe hai.
 
 ```text
 k0 = 0:  As = A[0:2, 0:2]    Bs = B[0:2, 0:2]
 k0 = 2:  As = A[0:2, 2:4]    Bs = B[2:4, 0:2]
 ```
 
-`A[0][0]` enters shared memory once and both output columns of that tile use it. It is not fetched from global memory again until the next K step. The naive loop left that reuse to L2.
+`A[0][0]` shared memory mein ek baar aata hai. Us tile ke dono output columns use karte hain. Agla K-step aane tak global se dobara nahi aata. Naive loop yeh reuse L2 ke bharose chhod deta tha.
 
-The global load is still row-wise, so it can stay coalesced. Column-wise reuse happens inside shared memory, which is where bank conflicts show up. `BK = 32` with no padding makes a column read a 32-way conflict. The fix is the same `+1` padding.
+Global load ab bhi row-wise hai, isliye coalesced reh sakta hai. Column-wise reuse shared memory ke andar hota hai. `BK = 32` bina padding ke column read 32-way conflict hai. Fix wahi `+1` padding hai.
 
-Two tiles cost `2 × BM × BK × 4` bytes for floats. At `32 × 32` that is `2 × 32 × 32 × 4 = 8 KB`. That fits easily in 228 KB. Assignment 1.2 compares naive against this shared-memory tiled kernel, at `4096 × 4096`. The code belongs in that assignment. Today the algorithm is enough.
+Do tiles ka size, float mein: `2 × BM × BK × 4` bytes. `32 × 32` pe `2 × 32 × 32 × 4 = 8 KB`. 228 KB mein aaram se fit hai.
 
-## Rule for today
+Assignment 1.2 yahi compare karega: naive vs shared-memory tiled, `4096 × 4096`. Code us assignment mein hoga. Aaj algorithm kaafi hai.
 
-Inside the box, GPUs talk on **NVLink + NVSwitch**, not on PCIe. Inside one GPU, a warp should issue a **128-byte aligned, stride-1** global load. Shared memory has **32 banks**. If a tile is 32 wide, pad it. A GEMM tile sits in SRAM so that reuse does not fall back to HBM after the 64 MB matrix no longer fits in L2.
+## Aaj ka rule
+
+Box ke andar GPUs **NVLink + NVSwitch** pe bolte hain, PCIe pe nahi. Global memory se warp **128-byte aligned, stride-1** load kare, taaki truck khali na jaaye. Shared memory ke **32 banks** hain. Tile 32 wide ho to ek column pad karo. GEMM ka tile SRAM mein isliye aata hai taaki 64 MB ki matrix L2 se bahar hone ke baad bhi wahi byte HBM se baar baar na aaye.

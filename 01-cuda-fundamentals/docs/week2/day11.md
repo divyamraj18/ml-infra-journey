@@ -1,12 +1,14 @@
 # Day 11: NCCL collectives
 
-**NCCL** (NVIDIA Collective Communications Library) runs one operation across GPUs. PyTorch **DDP** and **FSDP**, Megatron tensor parallel, and vLLM tensor parallel all sit on NCCL. You may never call `ncclAllReduce` yourself. The step time is still NCCL's.
+**NCCL** (NVIDIA Collective Communications Library) GPUs ke beech ek operation poora karti hai. PyTorch **DDP** aur **FSDP**, Megatron ka tensor parallel, aur vLLM ka tensor parallel, sab ke neeche NCCL hota hai.
 
-Each GPU has a **rank**. **World size** is the number of ranks. Every rank's buffer has the same shape, unless the collective is AllGather or ReduceScatter.
+Tum khud `ncclAllReduce` na likho, phir bhi step time usi ka hota hai.
 
-## Five operations
+Har GPU ka ek **rank** hota hai. **World size** kitne ranks hain. Jab tak collective AllGather ya ReduceScatter na ho, har rank ka buffer same shape ka hota hai.
 
-Four ranks. Each rank holds a small vector. The numbers only show the operation.
+## Paanch operations, ek chhoti class
+
+Chaar ranks. Har rank ke paas ek chhota vector. Numbers sirf operation dikhane ke liye hain.
 
 ```text
 rank0: [1, 2]
@@ -15,18 +17,22 @@ rank2: [5, 6]
 rank3: [7, 8]
 ```
 
-**Broadcast.** One root's buffer is copied to everyone. If root is 0, every rank becomes `[1, 2]`. Everyone else's data is overwritten.
+Socho chaar students ke paas apni copy hai. Teacher ek collective bolta hai. Operation yeh decide karta hai ki baad mein kis ke paas kya bacha.
 
-**Reduce.** The same index is combined with an op, and the result stays only on the root. Sum, root 0:
+**Broadcast.** Ek root ki copy sabko milti hai. Root 0 ho to har rank `[1, 2]` ban jaata hai. Baaki ka apna data overwrite ho jaata hai.
+
+**Reduce.** Same index pe op lagta hai. Result sirf root pe rehta hai. Sum, root 0:
 
 ```text
 rank0: [1+3+5+7, 2+4+6+8] = [16, 20]
-rank1, rank2, rank3: their buffers do not hold the reduced result
+rank1, rank2, rank3: inke buffer mein reduced result nahi hai
 ```
 
-**AllReduce.** Reduce, then the result is on **every** rank. After the sum, all four ranks hold `[16, 20]`. This is the data-parallel gradient step. Each rank computed a gradient on its own batch. After the AllReduce sum, every rank has the full gradient, so the Adam update can run locally. If you want the average, divide by world size after the sum. The framework does that divide. NCCL does the sum.
+**AllReduce.** Reduce, phir result **har** rank pe. Sum ke baad chaaron ke paas `[16, 20]` hai.
 
-**AllGather.** Each rank contributes a shard. Everyone receives the concatenation.
+Yeh data parallel ka gradient step hai. Har rank ne apne batch pe gradient nikala. AllReduce sum ke baad har rank ke paas poora gradient hai, tab Adam ka update local chal sakta hai. Average chahiye ho to sum ke baad world size se divide hota hai. Woh divide framework karta hai. NCCL sum karta hai.
+
+**AllGather.** Har rank ek shard deta hai. Sabke paas concatenation aa jaati hai.
 
 ```text
 rank0 contributes [1]
@@ -36,58 +42,60 @@ rank3 contributes [7]
 after: every rank has [1, 3, 5, 7]
 ```
 
-The output buffer is larger than the input, by a factor of world size.
+Output buffer input se bada hai, world size guna.
 
-**ReduceScatter.** Reduce and scatter together. The sum is computed, but each rank keeps only its own piece.
+**ReduceScatter.** Reduce bhi, scatter bhi. Sum banta hai, lekin har rank sirf apna tukda rakhta hai.
 
 ```text
-shards of the sum [16, 20]:
+sum ke tukde [16, 20]:
 rank0 keeps 16
 rank1 keeps 20
 ```
 
-That picture is two elements and two ranks. With four ranks the vector is longer, and each rank keeps `1/N` of the elements.
+Yeh picture do elements aur do ranks ki hai. Chaar ranks pe vector lamba hota hai, aur har rank `1/N` elements rakhta hai.
 
-AllReduce = ReduceScatter + AllGather. NCCL can split it that way internally. FSDP and ZeRO use the split on purpose: they do not need the full gradient on every GPU, only their shard. ReduceScatter is then enough instead of AllReduce, and about half the traffic goes away.
+AllReduce = ReduceScatter + AllGather. NCCL andar yeh tod sakta hai. FSDP aur ZeRO yeh tod jaanbujh kar use karte hain. Unhe poora gradient har GPU pe nahi chahiye, sirf apna shard. Tab AllReduce ki jagah ReduceScatter kaafi hai, aur lagbhag aadha traffic bachta hai.
 
-## Which parallelism uses which collective
+## Kaun si parallelism, kaun sa collective
 
-| Pattern | Collective | Why |
+| Pattern | Collective | Kyun |
 |---|---|---|
-| Data parallel, DDP | **AllReduce** on gradients | Every rank needs the full summed gradient, because every rank holds the full model. |
-| FSDP / ZeRO-2, ZeRO-3 | **ReduceScatter** on gradients, **AllGather** on parameters | Each rank holds only `1/N` of the state. |
-| Tensor parallel, column-parallel linear | **AllGather** | Each GPU produced some columns of the output. The next layer needs the full row. |
-| Tensor parallel, row-parallel linear | **AllReduce** or **ReduceScatter** | Each GPU produced a partial sum. Those partials have to be added. |
-| MoE expert parallel | **AlltoAll** | A token has to land on the expert the router picked. This is not one of the five above. The core of this plan is ring AllReduce. Remember AlltoAll here. The detail comes later. |
+| Data parallel, DDP | Gradients pe **AllReduce** | Har rank ko poora summed gradient chahiye, kyunki har rank poora model rakhta hai. |
+| FSDP / ZeRO-2, ZeRO-3 | Gradients pe **ReduceScatter**, parameters pe **AllGather** | Har rank sirf `1/N` state rakhta hai. |
+| Tensor parallel, column-parallel linear | **AllGather** | Har GPU ne output ke kuch columns banaye. Agli layer ko poori row chahiye. |
+| Tensor parallel, row-parallel linear | **AllReduce** ya **ReduceScatter** | Har GPU ne partial sum banaya. Unhe jodna hai. |
+| MoE expert parallel | **AlltoAll** | Token us expert pe jaaye jispe router ne bheja. Yeh upar ke paanch mein se nahi hai. Is plan ka core ring AllReduce hai. AlltoAll yahin yaad rakho. Detail baad mein. |
 
-## Ring AllReduce
+## Ring AllReduce: relay race
 
-N ranks in a ring: `0 → 1 → 2 → … → N-1 → 0`. The buffer is split into N chunks.
+N ranks ek ring mein: `0 → 1 → 2 → … → N-1 → 0`. Buffer N chunks mein kata hua hai.
 
-**ReduceScatter phase**, N−1 steps. On each step every rank sends one chunk to the next rank and adds the chunk it receives into its own chunk. After N−1 steps, each chunk is fully summed, and that sum lives on one rank.
+Socho ek baton jo circle mein ghoomti hai. Farq yeh hai ki beech mein log apna hissa jodte jaate hain, phir joda hua baton sabko dikhaya jaata hai.
 
-**AllGather phase**, another N−1 steps. Those summed chunks travel around the ring with no further add, until every rank has every chunk.
+**ReduceScatter phase.** N−1 steps. Har step pe har rank ek chunk agle rank ko bhejta hai, aur jo chunk aaya use apne chunk mein add kar leta hai. N−1 steps ke baad har chunk kisi ek rank pe poora summed hai.
 
-Bytes each rank sends:
+**AllGather phase.** Aur N−1 steps. Woh summed chunks ring pe ghoomte hain, ab add nahi hota, jab tak har rank ke paas har chunk na ho.
+
+Har rank jitna data bhejta hai:
 
 ```text
 2 * (N - 1) / N * S
 ```
 
-For large N this is about **`2S`**. S is the buffer size. On 8 GPUs the factor is `2 * 7/8 = 1.75`. On 14 GB of gradients, each GPU puts about `1.75 × 14 ≈ 24.5 GB` onto its link over the whole ring.
+N bada ho to yeh **`2S`** ke kareeb hai. S buffer ka size hai. 8 GPUs pe factor `2 × 7/8 = 1.75` hai. 14 GB gradients pe har GPU poori ring ke dauran lagbhag `1.75 × 14 ≈ 24.5 GB` apni link pe daalta hai.
 
-That is bandwidth-optimal. The naive pattern is "everyone sends to the root, the root sends the result back." The root's link then carries `(N−1) × S` in and `(N−1) × S` out. The root becomes the bottleneck. In a ring, every link does the same amount of work.
+Yeh bandwidth-optimal hai. Naive tarika: sab root ko bhejo, root sabko wapas bheje. Root ki link pe `(N−1) × S` aata hai aur utna hi wapas jaata hai. Root atak jaata hai. Ring mein har link same kaam karti hai.
 
-**Tree** AllReduce is for small messages. Depth is `log N`, so latency is lower. Some bytes cross the same links more than once, so a large buffer is worse than a ring. NCCL picks the algorithm from the size. A small tensor uses a tree. A large tensor uses a ring. The Day 12 log prints the algorithm name.
+**Tree** AllReduce chhote messages ke liye hai. Depth `log N` hai, isliye latency kam hai. Kuch bytes same links pe dobara chalte hain, isliye bada buffer ring se bura hai. NCCL size dekh kar algorithm chunta hai. Chhota tensor tree. Bada tensor ring. Day 12 ka log algorithm ka naam likhta hai.
 
-## Reduction inside the switch
+## Switch ke andar ka add
 
-**SHARP** does the reduction on an InfiniBand switch. GPUs send partial chunks to the switch. The switch returns the sum. The ring does not have to pass through every GPU.
+**SHARP** InfiniBand switch pe reduction hai. GPUs partial chunks switch ko dete hain. Switch sum karke result de deta hai. Poora ring har GPU se nahi guzarta.
 
-**NVLS** (NVLink SHARP) is the same idea on NVSwitch, starting with Hopper. An intra-node AllReduce can run on the switch ALU. With 8 GPUs in one box, a lot of gradient traffic finishes on NVLink and never reaches a NIC.
+**NVLS** (NVLink SHARP) wahi idea NVSwitch pe hai, Hopper se. Intra-node AllReduce switch ke ALU pe ho sakta hai. 8 GPUs ek box mein hon to bahut saara gradient traffic NVLink pe hi khatam ho jaata hai. NIC tak jaaye bina.
 
-Both work only when NCCL can enable them and the hardware is there. If the log does not say `NVLS` or `SHARP`, the plain ring is running. That is not wrong. The switch shortcut is just not in use.
+Dono tab chalte hain jab NCCL unhe enable kar paaye aur hardware maujood ho. Log mein `NVLS` ya `SHARP` na dikhe to purana ring chal raha hai. Woh galat nahi hai. Switch wala shortcut use nahi ho raha.
 
-## Rule for today
+## Aaj ka rule
 
-DDP uses **AllReduce**. FSDP uses **ReduceScatter + AllGather**. Tensor parallel uses **AllGather** or **AllReduce**, depending on how the layer is cut. On a ring, each GPU sends about **`2 × (N−1)/N × S`** bytes. Small messages use a tree. Large messages use a ring. Inside a Hopper box, NVLS can move that ring onto the switch.
+DDP = **AllReduce**. FSDP = **ReduceScatter + AllGather**. Tensor parallel = **AllGather** ya **AllReduce**, layer ka cut decide karta hai. Ring pe har GPU lagbhag **`2 × (N−1)/N × S`** bytes bhejta hai. Chhota message tree. Bada message ring. Hopper box ke andar NVLS us ring ko switch pe shift kar sakta hai.

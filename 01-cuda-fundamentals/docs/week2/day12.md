@@ -1,8 +1,12 @@
-# Day 12: NCCL debug and topology
+# Day 12: NCCL debug aur topology
 
-A collective can return the right answer and still be slow. AllReduce on the wrong fabric produces the same numbers. The difference shows up in step time. Debugging means finding out whether the bytes went over NVLink and InfiniBand, or over a TCP socket.
+Collective sahi jawab de sakta hai aur phir bhi slow ho sakta hai. Galat sadak pe AllReduce ka result wahi rehta hai. Farq step time mein dikhta hai.
 
-## Turn the log on
+Debug ka kaam yeh pakadna hai: bytes NVLink aur InfiniBand pe gaye, ya TCP socket pe?
+
+Socho parcel pe ek shipping label hai. Label galat ho to parcel pahunch jaata hai, lekin local post se, express highway se nahi.
+
+## Log on karo
 
 ```bash
 NCCL_DEBUG=INFO
@@ -10,64 +14,73 @@ NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH,COLL
 NCCL_DEBUG_FILE=/tmp/nccl.%h.%p.log
 ```
 
-`INFO` prints the algorithm, the protocol, and the device. `TRACE` is much longer. Start with INFO.
+`INFO` algorithm, protocol, aur device likhta hai. `TRACE` usse bahut lamba hai. Pehle INFO.
 
-`SUBSYS` is a filter. `INIT` is bootstrap. `NET` is which NIC. `GRAPH` is the ring or tree. `COLL` is the collective. Do not take the whole log in one stream.
+`SUBSYS` filter hai.
 
-DDP is one process per GPU. If every process writes stdout, the lines mix. In `NCCL_DEBUG_FILE`, `%h` is the hostname and `%p` is the pid. One file per process.
-
-## The line that is the real bug
-
-Names of the data path:
-
-| In the log | Meaning |
+| Subsystem | Kya dikhata hai |
 |---|---|
-| `P2P/NVLink` or `NVLS` | Intra-node traffic is on the right path. |
-| `NET/IB` | InfiniBand. This is what you want on an IB cluster. |
-| `NET/RoCE`, or an IB HCA running in Ethernet mode | RoCE. Fine if the fabric is RoCE. |
-| `NET/Socket` or `via Socket` | **TCP fallback.** Training still runs. Bandwidth falls onto PCIe and the CPU. |
+| `INIT` | Bootstrap. Ranks ne ek doosre ko kaise dhunda. |
+| `NET` | Kaun sa NIC. |
+| `GRAPH` | Ring ya tree. |
+| `COLL` | Collective khud. |
 
-Do not treat a Socket line as a warning if it is only **bootstrap**. Bootstrap uses TCP to exchange queue pairs. The data collective after that should be `NET/IB`. If the collective itself is on Socket, the NIC is not in the data path.
+DDP har GPU ke liye alag process hai. Sab stdout pe likhein to lines ek doosre mein ghus jaati hain. `NCCL_DEBUG_FILE` mein `%h` hostname hai, `%p` pid. Ek file, ek process.
 
-The same log names the protocol: **LL**, **LL128**, **Simple**. LL is for small messages. Simple is for large ones. A large gradient should be on Simple.
+## Jo line asli bug hai
 
-## Variables that change the path
+Data path ke naam:
 
-| Variable | Effect |
+| Log mein | Matlab |
 |---|---|
-| `NCCL_IB_DISABLE=1` | Turns IB/RoCE off. Data falls onto Socket. Sometimes this is a test. Sometimes an old script left it set. |
-| `NCCL_P2P_DISABLE=1` | Turns off GPU peer access. Even inside the box there is no NVLink. Traffic goes through the host. |
-| `NCCL_IB_HCA` | Which ConnectX devices to use. A wrong name means NCCL never finds them, and it can fall back to Socket. |
-| `NCCL_SOCKET_IFNAME` | Ethernet interface for bootstrap. `eth0` versus `ib0`. This is not the data path, but the wrong interface means ranks never discover each other. |
-| `NCCL_NET_GDR_LEVEL` | GPUDirect RDMA only when the GPU and NIC are close enough. Values: `PIX`, `PXB`, `PHB`, `LOC`, `SYS`. `SYS` also allows pairs that sit across CPU sockets. The default can disable GPUDirect for distant pairs. The log line "GPU Direct RDMA disabled" is that signal. |
-| `NCCL_TOPO_DUMP_FILE` | XML of GPUs, NICs, NVSwitch, and PCIe distance. |
-| `NCCL_GRAPH_DUMP_FILE` | Which rings were built. |
+| `P2P/NVLink` ya `NVLS` | Box ke andar sahi jagah. |
+| `NET/IB` | InfiniBand. IB cluster pe yahi chahiye. |
+| `NET/RoCE`, ya IB HCA jo Ethernet mode mein ho | RoCE. Theek hai agar fabric RoCE hai. |
+| `NET/Socket` ya `via Socket` | **TCP fallback.** Training chalegi. Bandwidth PCIe aur CPU pe gir jaayegi. |
 
-Do not copy these into production blindly. Read the INFO log first, then change one variable.
+`Socket` ko turant bug mat samajhna agar woh sirf **bootstrap** hai. Bootstrap TCP se queue pairs exchange karta hai. Data collective uske baad `NET/IB` hona chahiye. Collective khud Socket pe hai to NIC data path mein hai hi nahi.
 
-## Topology
+Usi log mein protocol ke naam hote hain: **LL**, **LL128**, **Simple**. LL chhote messages. Simple bade. Bada gradient Simple pe hona chahiye.
 
-`nvidia-smi topo -m` prints a matrix. A cell is the distance between two devices.
+## Variables jo sadak badal dete hain
 
-| Code | Meaning |
+| Variable | Asar |
 |---|---|
-| `NV#` | NVLink, `#` links. Best GPU-to-GPU path. |
-| `PIX` | Same PCIe switch. Best GPU-to-NIC path for GPUDirect. |
-| `PXB` | Across PCIe switches, through the same root complex. |
-| `PHB` | Same CPU, different PCIe host bridge. |
-| `NODE` | Same CPU socket, farther away. |
-| `SYS` | The other CPU socket. Crosses QPI or UPI. GPUDirect is often disabled here. |
+| `NCCL_IB_DISABLE=1` | IB/RoCE band. Data Socket pe chala jaata hai. Kabhi test ke liye hota hai. Kabhi purani script ise chhod gayi hoti hai. |
+| `NCCL_P2P_DISABLE=1` | GPU peer access band. Box ke andar bhi NVLink nahi. Traffic host se guzarta hai. |
+| `NCCL_IB_HCA` | Kaun se ConnectX use hon. Galat naam pe NCCL unhe dhundhta hi nahi, aur Socket pe gir sakta hai. |
+| `NCCL_SOCKET_IFNAME` | Bootstrap ka Ethernet interface. `eth0` vs `ib0`. Yeh data path nahi hai. Galat interface pe ranks ek doosre ko discover hi nahi kar paate. |
+| `NCCL_NET_GDR_LEVEL` | GPUDirect RDMA tabhi jab GPU aur NIC kaafi paas hon. Values: `PIX`, `PXB`, `PHB`, `LOC`, `SYS`. `SYS` CPU sockets ke across bhi allow karta hai. Default door wale pair pe GPUDirect band kar sakta hai. Log line "GPU Direct RDMA disabled" usi ka signal hai. |
+| `NCCL_TOPO_DUMP_FILE` | XML. GPU, NIC, NVSwitch, PCIe distance. |
+| `NCCL_GRAPH_DUMP_FILE` | Kaun se rings bane. |
 
-On a DGX H100 each GPU has its own ConnectX, and that pair should be `PIX`. If GPU0's traffic leaves through the NIC next to GPU4, you still pay an extra hop and a socket cross after the intra-node NVLink.
+Inhe production pe andha copy mat karna. Pehle INFO log padho. Phir ek variable badlo.
 
-A **rail-optimized** fabric sends GPU `i`'s NIC, on every node, to the same leaf switch. That path is rail `i`. An AllReduce ring can stay on that rail and avoid the spine. On a node with 8 GPUs and 8 NICs, NCCL builds 8 rings, one ring per rail. One ring that uses only one NIC leaves the other 7 ports idle. The Day 13 diagram is that picture.
+## Topology: devices kitne door hain
+
+`nvidia-smi topo -m` ek matrix deta hai. Cell do devices ka distance hai.
+
+| Code | Matlab |
+|---|---|
+| `NV#` | NVLink, `#` links. GPU se GPU, best. |
+| `PIX` | Same PCIe switch. GPU se NIC, GPUDirect ke liye best. |
+| `PXB` | PCIe switches ke across, same root complex se. |
+| `PHB` | Same CPU, alag PCIe host bridge. |
+| `NODE` | Same CPU socket, aur door. |
+| `SYS` | Doosra CPU socket. QPI ya UPI cross. GPUDirect yahan aksar band. |
+
+DGX H100 pe har GPU ka apna ConnectX hota hai. Woh pair `PIX` hona chahiye. GPU0 ka traffic agar GPU4 wale NIC se bahar jaaye, to NVLink ke baad bhi ek extra hop aur ek socket cross padta hai.
+
+**Rail-optimized** fabric: har node pe GPU `i` ka NIC same leaf switch pe jaata hai. Us path ka naam rail `i` hai. AllReduce ka ring us rail pe reh sakta hai. Spine cross nahi hota.
+
+8 GPU × 8 NIC wale node pe NCCL 8 rings banata hai, ek ring ek rail. Ek ring sirf ek NIC use kare to baaki 7 ports khali reh jaate hain. Day 13 ka diagram yahi hai.
 
 ## Benchmark
 
-`all_reduce_perf` from `nccl-tests` runs the same operation DDP runs, without a training loop. The output includes bus bandwidth.
+`nccl-tests` ka `all_reduce_perf` wahi operation chalata hai jo DDP chalata hai, training loop ke bina. Output mein **bus bandwidth** hoti hai.
 
-For a large out-of-place ring AllReduce, bus bandwidth should land near the link rate. If the NICs are 400 Gb/s and bus bandwidth prints 10 Gb/s, you are on a Socket fallback or the wrong NIC. Confirm `NET/IB` in the log before you memorize the number. A high score on the wrong path does not mean anything.
+Bada out-of-place ring AllReduce, link rate ke kareeb bus bandwidth dikhana chahiye. NICs 400 Gb/s hon aur bus bandwidth 10 Gb/s dikhe, to Socket fallback hai ya galat NIC. Number yaad karne se pehle log mein `NET/IB` confirm karo. Galat path ka bada score matlab nahi rakhta.
 
-## Rule for today
+## Aaj ka rule
 
-Read `NCCL_DEBUG=INFO` for this: the collective is on `P2P/NVLink` or `NET/IB`, and it is not on `Socket`. `nvidia-smi topo -m` should show `PIX` between a GPU and its NIC. A rail means GPU `i` always exits through NIC `i`, so all 8 ports fill together.
+`NCCL_DEBUG=INFO` se yeh padho: collective `P2P/NVLink` pe hai ya `NET/IB` pe, aur `Socket` pe nahi. `nvidia-smi topo -m` pe GPU aur uske NIC ke beech `PIX` hona chahiye. Rail ka matlab GPU `i` hamesha NIC `i` se bahar jaaye, taaki 8 ports ek saath bharen.
